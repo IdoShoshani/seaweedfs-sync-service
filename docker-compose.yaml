@@ -30,14 +30,14 @@ services:
     networks:
       - seaweed_net
 
-  # python_client:
-  #   build: ./client
-  #   volumes:
-  #     - ./watched:/app/watched
-  #   depends_on:
-  #     - filer
-  #   networks:
-  #     - seaweed_net
+  python_client:
+    build: ./client
+    volumes:
+      - ./watched:/app/watched
+    depends_on:
+      - filer
+    networks:
+      - seaweed_net
 
 networks:
   seaweed_net:
