@@ -1,0 +1,46 @@
+services:
+  master:
+    image: chrislusf/seaweedfs
+    command: "master -ip=master -ip.bind=0.0.0.0"
+    ports:
+      - "9333:9333"
+    networks:
+      - seaweed_net
+
+  volume:
+    image: chrislusf/seaweedfs
+    command: 'volume -mserver="master:9333" -ip.bind=0.0.0.0 -port=8080 -dir="/data"'
+    volumes:
+      - seaweed_volume_data:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      - master
+    networks:
+      - seaweed_net
+
+  filer:
+    image: chrislusf/seaweedfs
+    command: 'filer -master="master:9333" -ip.bind=0.0.0.0'
+    ports:
+      - "8888:8888"
+    depends_on:
+      - master
+      - volume
+    networks:
+      - seaweed_net
+
+  # python_client:
+  #   build: ./client
+  #   volumes:
+  #     - ./watched:/app/watched
+  #   depends_on:
+  #     - filer
+  #   networks:
+  #     - seaweed_net
+
+networks:
+  seaweed_net:
+
+volumes:
+  seaweed_volume_data:
