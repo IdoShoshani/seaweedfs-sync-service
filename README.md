@@ -54,6 +54,7 @@ A containerized Python service that monitors a local directory for new files and
 
    - Watch the Docker Compose logs for messages like `Successfully uploaded: <filename>` with file size and fid details.
    - Access the SeaweedFS filer UI at http://localhost:8888 to browse uploaded files in the root directory.
+     ![Alt text](docs/images/filer.png?raw=true "filer screenshot")
 
 5. **Stop the stack**
    ```bash
