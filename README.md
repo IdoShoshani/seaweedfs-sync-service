@@ -1,6 +1,6 @@
 # SeaweedFS Sync Service
 
-A containerized Python service that monitors a local directory for new files and uploads them to a SeaweedFS cluster. The project includes Docker Compose for the SeaweedFS master/volume/filer components plus a host-side helper script that periodically generates files in the watched directory.
+A containerized Python service that monitors a local directory for new files and uploads them to a SeaweedFS cluster via the Filer API. The project includes Docker Compose for the SeaweedFS master/volume/filer components plus a host-side helper script that periodically generates files in the watched directory.
 
 ## Project Structure
 
@@ -48,12 +48,12 @@ A containerized Python service that monitors a local directory for new files and
    python scripts/random_file_creator.py
    ```
 
-   The script creates random text files in `./watched` every 30–60 seconds. The client container detects each file, uploads it to SeaweedFS, and logs the updated storage usage from the master node.
+   The script creates random text files in `./watched` every 30–60 seconds. The client container detects each file and uploads it to SeaweedFS via the Filer API to the root directory, then logs the updated storage usage from the master node.
 
 4. **Confirm uploads**
 
-   - Watch the Docker Compose logs for messages like `Successfully uploaded: <filename>` and storage summaries.
-   - Access the SeaweedFS filer UI at http://localhost:8888 to browse uploaded files.
+   - Watch the Docker Compose logs for messages like `Successfully uploaded: <filename>` with file size and fid details.
+   - Access the SeaweedFS filer UI at http://localhost:8888 to browse uploaded files in the root directory.
 
 5. **Stop the stack**
    ```bash
@@ -62,9 +62,20 @@ A containerized Python service that monitors a local directory for new files and
 
 ## Service Details
 
+### Client Upload Flow
+
 - **File monitoring:** Implemented with `watchdog`; ignores hidden/temp/backup files and waits for file writes to stabilize before uploading.
-- **Upload flow:** Requests a file ID from the SeaweedFS master (`/dir/assign`), uploads the file to the assigned volume server, then queries `/vol/status` to log total bytes, file count, and volume count.
-- **Reliability guards:** Tracks processing files to avoid duplicates, hashes content to prevent re-uploading identical files, and retries master availability on startup.
+- **Upload via Filer:** Sends files directly to SeaweedFS Filer root directory (`POST /uploads`), which automatically handles file ID assignment and storage distribution.
+- **Filename preservation:** Original filenames are preserved in the distributed storage.
+- **Storage reporting:** Queries `/vol/status` from the master node to log total bytes, file count, and volume count.
+- **Reliability guards:** Tracks processing files to avoid duplicates, hashes content to prevent re-uploading identical files, and verifies both Filer and Master availability on startup.
+
+### Health Checks on Startup
+
+The service performs dual health checks:
+
+1. **Filer readiness** (primary): Waits for Filer to respond at `http://filer:8888/`
+2. **Master verification** (secondary): Confirms Master connectivity for storage statistics
 
 ## Configuration Notes
 
@@ -73,6 +84,10 @@ A containerized Python service that monitors a local directory for new files and
   - Master: `9333`
   - Volume: `8080`
   - Filer: `8888`
+- Service endpoints in `client/app.py`:
+  - `FILER_URL = "http://filer:8888"` — Primary upload endpoint
+  - `MASTER_URL = "http://master:9333"` — Storage statistics and cluster info
+- Files are uploaded to the **root directory** of the SeaweedFS Filer (no subdirectories).
 - To adjust the host file generation cadence, edit `MIN_DELAY` and `MAX_DELAY` in `scripts/random_file_creator.py`.
 
 ## Logs and Troubleshooting
@@ -81,7 +96,8 @@ A containerized Python service that monitors a local directory for new files and
   ```bash
   docker compose logs -f
   ```
-- If the client exits because the SeaweedFS master is unreachable, confirm the master container is healthy and restart the stack.
+- If the client exits because SeaweedFS Filer is unreachable, confirm the filer container is healthy and restart the stack.
+- For Master connectivity warnings, verify that the Master service is running. The client can continue if Filer is available but will have limited storage reporting.
 - The client uses standard output logging; adjust log level in `client/app.py` via `logging.basicConfig` if needed.
 
 ## Cleaning Up
@@ -94,10 +110,3 @@ A containerized Python service that monitors a local directory for new files and
   ```bash
   docker volume rm seaweedfs-sync-service_seaweed_volume_data
   ```
-
-## Assignment Mapping
-
-- **File Monitoring:** `client/app.py` watches `/app/watched` for new files.
-- **SeaweedFS Upload:** Files are uploaded through the SeaweedFS HTTP API (`/dir/assign` + volume write).
-- **Storage Reporting:** After each upload, `/vol/status` is queried and summarized in the logs.
-- **Host Routine Task:** `scripts/random_file_creator.py` runs on the host to periodically generate new files.

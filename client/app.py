@@ -14,14 +14,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class SeaweedFSUploader(FileSystemEventHandler):
-    """Uploads new files to SeaweedFS"""
+    """Uploads new files to SeaweedFS via Filer"""
     
-    def __init__(self, master_url, watched_dir):
+    def __init__(self, filer_url, master_url, watched_dir):
+        self.filer_url = filer_url
         self.master_url = master_url
         self.watched_dir = Path(watched_dir)
         self.uploaded_files = set()  # Track uploaded files to prevent duplicates
         self.processing_files = set()  # Track files currently being processed
-        logger.info(f"Initialized uploader. Master: {master_url}, Watching: {watched_dir}")
+        logger.info(f"Initialized uploader. Filer: {filer_url}, Master: {master_url}, Watching: {watched_dir}")
     
     def on_created(self, event):
         """Triggered when a new file is created"""
@@ -133,47 +134,40 @@ class SeaweedFSUploader(FileSystemEventHandler):
             return str(file_path)
     
     def upload_file(self, file_path):
-        """Uploads a file to SeaweedFS"""
+        """Uploads a file to SeaweedFS via Filer to root directory"""
         
-        # Step 1: Get fid (file ID) from Master
-        assign_url = f"{self.master_url}/dir/assign"
-        
-        try:
-            response = requests.post(assign_url, timeout=10)
-            response.raise_for_status()
-            assign_data = response.json()
-            
-            fid = assign_data['fid']
-            public_url = assign_data['publicUrl']
-            
-            logger.info(f"Assigned fid: {fid} on {public_url}")
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get fid from master: {e}")
-            raise
-        
-        # Step 2: Upload the file to Volume Server
-        upload_url = f"http://{public_url}/{fid}"
+        # Upload directly to Filer with file name preserved
+        # Filer will handle the assignment and storage automatically
+        upload_url = f"{self.filer_url}/{file_path.name}"
         
         try:
             with open(file_path, 'rb') as f:
                 files = {'file': (file_path.name, f)}
                 response = requests.post(upload_url, files=files, timeout=30)
                 response.raise_for_status()
-            
-            logger.info(f"✓ Successfully uploaded: {file_path.name} (fid: {fid})")
-            
+                
+                # Parse response to get file details
+                result = response.json()
+                fid = result.get('fid', 'N/A')
+                size = result.get('size', 0)
+                
+                logger.info(f"✓ Successfully uploaded: {file_path.name} (fid: {fid}, size: {size} bytes)")
+                
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to upload file: {e}")
+            logger.error(f"Failed to upload file to Filer: {e}")
             raise
         except IOError as e:
             logger.error(f"Failed to read file {file_path}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during upload: {e}")
             raise
     
     def report_storage_status(self):
         """Queries and prints storage status from Master"""
         
-        # Get volume statistics
+        # Get volume statistics from Master server
+        # Master has the authoritative view of all volumes in the cluster
         volumes_url = f"{self.master_url}/vol/status"
         
         try:
@@ -208,7 +202,7 @@ class SeaweedFSUploader(FileSystemEventHandler):
             logger.info(f"📊 Storage Status: {total_size:,} bytes ({total_mb:.2f} MB) | Files: {total_files} | Volumes: {volume_count}")
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get storage status: {e}")
+            logger.error(f"Failed to get storage status from Master: {e}")
         except Exception as e:
             logger.error(f"Error parsing storage status: {e}")
 
@@ -216,6 +210,7 @@ def main():
     """Service entry point"""
     
     # Configuration
+    FILER_URL = "http://filer:8888"
     MASTER_URL = "http://master:9333"
     WATCHED_DIR = "/app/watched"
     
@@ -227,28 +222,39 @@ def main():
     watched_path = Path(WATCHED_DIR)
     watched_path.mkdir(parents=True, exist_ok=True)
     
-    # Wait for SeaweedFS to be ready
-    logger.info("Waiting for SeaweedFS master to be ready...")
+    # Wait for SeaweedFS Filer to be ready
+    logger.info("Waiting for SeaweedFS Filer to be ready...")
     max_retries = 15
     retry_delay = 2
     
     for i in range(max_retries):
         try:
-            response = requests.get(f"{MASTER_URL}/dir/status", timeout=5)
+            response = requests.get(f"{FILER_URL}/", timeout=5)
             if response.status_code == 200:
-                logger.info("✓ SeaweedFS master is ready!")
+                logger.info("✓ SeaweedFS Filer is ready!")
                 break
         except requests.exceptions.RequestException as e:
             logger.debug(f"Retry {i+1}/{max_retries}: {e}")
         
         if i == max_retries - 1:
-            logger.error(f"Failed to connect to SeaweedFS master after {max_retries} attempts")
+            logger.error(f"Failed to connect to SeaweedFS Filer after {max_retries} attempts")
             return
         
         time.sleep(retry_delay)
     
+    # Verify Master is also ready
+    logger.info("Verifying SeaweedFS Master connection...")
+    try:
+        response = requests.get(f"{MASTER_URL}/dir/status", timeout=5)
+        if response.status_code == 200:
+            logger.info("✓ SeaweedFS Master is ready!")
+        else:
+            logger.warning("Master server responded but may not be fully ready")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Could not verify Master server: {e}")
+    
     # Start monitoring
-    event_handler = SeaweedFSUploader(MASTER_URL, WATCHED_DIR)
+    event_handler = SeaweedFSUploader(FILER_URL, MASTER_URL, WATCHED_DIR)
     observer = Observer()
     observer.schedule(event_handler, WATCHED_DIR, recursive=False)
     observer.start()
